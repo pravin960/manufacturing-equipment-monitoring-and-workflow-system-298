@@ -14,7 +14,7 @@ const swaggerSpec = require('../swagger');
  * @returns {string}
  */
 function getPublicApiBaseUrl(req) {
-  const publicBaseUrl = (process.env.PUBLIC_API_BASE_URL || '').trim().replace(/\/+$/, '');
+  const publicBaseUrl = (process.env.PUBLIC_API_BASE_URL || '').trim().replace(/\/*$/, '');
   if (publicBaseUrl) return publicBaseUrl;
 
   // Prefer reverse-proxy headers when present
@@ -22,9 +22,13 @@ function getPublicApiBaseUrl(req) {
   const forwardedHost = (req.get('x-forwarded-host') || '').split(',')[0].trim();
 
   const protocol = forwardedProto || (req.secure ? 'https' : req.protocol);
-  const host = forwardedHost || req.get('host'); // may include port in local/dev
 
-  return `${protocol}://${host}`;
+  // x-forwarded-host/host may still include an internal port; strip it for the public server URL.
+  // This prevents Swagger "Try it out" from targeting e.g. https://public-host:3001 in prod.
+  const rawHost = forwardedHost || req.get('host') || '';
+  const hostWithoutPort = String(rawHost).replace(/:\d+$/, '');
+
+  return `${protocol}://${hostWithoutPort}`;
 }
 
 // Initialize express app
@@ -99,7 +103,13 @@ app.use('/docs', swaggerUi.serve, (req, res, next) => {
     servers: [{ url: serverUrl }],
   };
 
-  swaggerUi.setup(dynamicSpec)(req, res, next);
+  // Ensure the UI loads the spec from the canonical endpoint on the deployed host.
+  // This also ensures the UI uses the same dynamic spec served at /openapi.json.
+  swaggerUi.setup(dynamicSpec, {
+    swaggerOptions: {
+      url: '/openapi.json',
+    },
+  })(req, res, next);
 });
 
 // Parse JSON request body

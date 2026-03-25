@@ -1,1 +1,3 @@
-# manufacturing-equipment-monitoring-and-workflow-system-298
+# Project Repository
+
+This is the initial README file for the project.

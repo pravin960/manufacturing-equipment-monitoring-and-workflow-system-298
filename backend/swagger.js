@@ -8,7 +8,7 @@ const options = {
       version: '1.0.0',
       description:
         'REST API for log ingestion, automated threshold evaluation, alert generation, and work order creation. ' +
-        'Real-time alerts are pushed via Socket.IO event `alerts:new` from the same host/port as this API.',
+        'Real-time alerts are pushed via Socket.IO event `new_alert` from the same host/port as this API.',
     }
   },
   apis: ['./src/routes/*.js'], // Path to the API docs

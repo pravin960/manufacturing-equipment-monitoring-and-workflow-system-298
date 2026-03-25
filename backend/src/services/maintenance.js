@@ -66,11 +66,29 @@ class MaintenanceService {
       createdAt: input.timestamp,
     });
 
+    // Debug log: alert created (per requirements)
+    console.log('[alerts] Alert created:', alert);
+
     await maintenanceRepo.markMachineAtRisk(input.machineId);
 
     const io = getIO();
     if (io) {
-      io.emit('alerts:new', alert);
+      // Required payload for realtime event "new_alert"
+      const eventPayload = {
+        machineId: alert.machineId,
+        parameter: alert.parameterName,
+        currentValue: alert.currentValue,
+        thresholdValue: alert.thresholdValue,
+        priority: alert.priority,
+        timestamp: alert.createdAt,
+      };
+
+      // Debug log: socket event emitted (per requirements)
+      console.log('[realtime] Emitting new_alert:', eventPayload);
+
+      io.emit('new_alert', eventPayload);
+    } else {
+      console.log('[realtime] Socket.IO not initialized; skipping new_alert emit');
     }
 
     return { log, thresholdUsed: threshold, alert };

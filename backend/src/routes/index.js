@@ -42,7 +42,7 @@ router.get('/', healthController.check.bind(healthController));
  *     summary: Create a parameter log and run automated threshold evaluation
  *     description: >
  *       Persists a parameter log. If the configured threshold is exceeded, automatically creates an alert,
- *       marks the machine as AT_RISK, and pushes a real-time Socket.IO event `alerts:new`.
+ *       marks the machine as AT_RISK, and pushes a real-time Socket.IO event `new_alert`.
  *     requestBody:
  *       required: true
  *       content:

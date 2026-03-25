@@ -4,6 +4,29 @@ const routes = require('./routes');
 const swaggerUi = require('swagger-ui-express');
 const swaggerSpec = require('../swagger');
 
+/**
+ * Determine the public-facing base URL for this API.
+ *
+ * Prefers an explicit PUBLIC_API_BASE_URL (recommended for production).
+ * Otherwise, derives from reverse-proxy headers first to avoid leaking internal ports (e.g. ":3001").
+ *
+ * @param {import('express').Request} req
+ * @returns {string}
+ */
+function getPublicApiBaseUrl(req) {
+  const publicBaseUrl = (process.env.PUBLIC_API_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (publicBaseUrl) return publicBaseUrl;
+
+  // Prefer reverse-proxy headers when present
+  const forwardedProto = (req.get('x-forwarded-proto') || '').split(',')[0].trim();
+  const forwardedHost = (req.get('x-forwarded-host') || '').split(',')[0].trim();
+
+  const protocol = forwardedProto || (req.secure ? 'https' : req.protocol);
+  const host = forwardedHost || req.get('host'); // may include port in local/dev
+
+  return `${protocol}://${host}`;
+}
+
 // Initialize express app
 const app = express();
 
@@ -57,16 +80,19 @@ app.set('trust proxy', true);
  * Environment variables:
  * - PUBLIC_API_BASE_URL: e.g. "https://api.example.com" (no trailing slash)
  */
+
+// PUBLIC_INTERFACE
+app.get('/openapi.json', (req, res) => {
+  /** Returns the generated OpenAPI specification used by Swagger UI and tooling. */
+  const serverUrl = getPublicApiBaseUrl(req);
+  return res.status(200).json({
+    ...swaggerSpec,
+    servers: [{ url: serverUrl }],
+  });
+});
+
 app.use('/docs', swaggerUi.serve, (req, res, next) => {
-  // Prefer explicitly configured public URL. This is the safest in production.
-  const publicBaseUrl = (process.env.PUBLIC_API_BASE_URL || '').trim().replace(/\/+$/, '');
-
-  // Fallback: derive from request (best-effort for local/dev).
-  const protocol = req.secure ? 'https' : req.protocol;
-  const host = req.get('host'); // may include port
-  const derivedBaseUrl = `${protocol}://${host}`;
-
-  const serverUrl = publicBaseUrl || derivedBaseUrl;
+  const serverUrl = getPublicApiBaseUrl(req);
 
   const dynamicSpec = {
     ...swaggerSpec,

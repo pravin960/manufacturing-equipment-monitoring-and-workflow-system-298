@@ -173,6 +173,11 @@ class MaintenanceRepo {
   /**
    * PUBLIC_INTERFACE
    * List alerts (newest first).
+   *
+   * Hardening notes:
+   * - If the `alerts` table is missing/uninitialized, attempt to create it (best effort) and return [].
+   * - Never throw from this method for missing table; callers (GET /alerts) should be safe.
+   *
    * @param {{limit?:number, offset?:number}} opts
    * @returns {Promise<object[]>}
    */
@@ -180,15 +185,60 @@ class MaintenanceRepo {
     const limit = opts.limit ? Number(opts.limit) : 200;
     const offset = opts.offset ? Number(opts.offset) : 0;
 
-    const result = await pool.query(
-      `SELECT id, machine_id, parameter_name, current_value, threshold_value, priority, message, created_at, acknowledged
-       FROM alerts
-       ORDER BY created_at DESC, id DESC
-       LIMIT $1 OFFSET $2`,
-      [limit, offset]
-    );
+    const runSelect = async () =>
+      pool.query(
+        `SELECT id, machine_id, parameter_name, current_value, threshold_value, priority, message, created_at, acknowledged
+         FROM alerts
+         ORDER BY created_at DESC, id DESC
+         LIMIT $1 OFFSET $2`,
+        [limit, offset]
+      );
 
-    return result.rows.map(mapAlertRow);
+    try {
+      const result = await runSelect();
+      return result.rows.map(mapAlertRow);
+    } catch (err) {
+      // PostgreSQL missing-table error code is 42P01 (undefined_table)
+      const isMissingTable = err && (err.code === '42P01' || /relation\s+"alerts"\s+does\s+not\s+exist/i.test(err.message || ''));
+
+      console.error('[db] listAlerts failed', {
+        message: err?.message,
+        code: err?.code,
+        isMissingTable,
+      });
+
+      if (!isMissingTable) {
+        // For other DB errors, return safe fallback (avoid breaking GET /alerts).
+        return [];
+      }
+
+      // Best-effort schema bootstrap for the alerts table.
+      try {
+        await pool.query(
+          `CREATE TABLE IF NOT EXISTS alerts (
+             id SERIAL PRIMARY KEY,
+             machine_id INTEGER NOT NULL,
+             parameter_name TEXT NOT NULL,
+             current_value NUMERIC NOT NULL,
+             threshold_value NUMERIC NOT NULL,
+             priority TEXT NOT NULL,
+             message TEXT,
+             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+             acknowledged BOOLEAN NOT NULL DEFAULT FALSE
+           )`
+        );
+
+        // Retry once after creation. If still failing, fall back to [].
+        const result = await runSelect();
+        return result.rows.map(mapAlertRow);
+      } catch (createErr) {
+        console.error('[db] Unable to create/verify alerts table; returning empty list.', {
+          message: createErr?.message,
+          code: createErr?.code,
+        });
+        return [];
+      }
+    }
   }
 
   /**

@@ -6,31 +6,67 @@ class AlertsController {
    * GET /alerts
    * Fetch alerts (newest first).
    *
-   * Hardening notes:
-   * - Must never throw 500 for empty/uninitialized data.
-   * - On any error (including missing alerts table), log clearly and return an empty list.
+   * Hardening requirements (per bugfix request):
+   * - Always return a JSON array ([]) as the top-level response body.
+   * - Must not emit 500 responses even if the DB query fails or returns null.
+   * - Use safe fallbacks and sanitize query inputs.
    */
   async list(req, res) {
-    // Always respond with a predictable payload shape.
-    const safeReturn = (alerts) => res.status(200).json({ data: Array.isArray(alerts) ? alerts : [] });
+    /**
+     * Always respond with a JSON array; never throw.
+     * Wrapped in try/catch so even response serialization issues won't bubble into Express error middleware.
+     * @param {unknown} alerts
+     */
+    const safeReturn = (alerts) => {
+      try {
+        const payload = Array.isArray(alerts) ? alerts : [];
+        return res.status(200).json(payload);
+      } catch (writeErr) {
+        // As an absolute last resort, still avoid a 500 by returning an empty array.
+        console.error('[alerts] Failed to write response; falling back to []', {
+          message: writeErr?.message,
+        });
+        try {
+          res.status(200).set('content-type', 'application/json').send('[]');
+        } catch (_) {
+          // If even that fails, do nothing (connection likely closed). Still avoid throwing.
+        }
+        return undefined;
+      }
+    };
 
     try {
       const { limit, offset } = req.query || {};
 
-      const alerts = await maintenanceService.getAlerts({
-        limit: limit !== undefined ? Number(limit) : undefined,
-        offset: offset !== undefined ? Number(offset) : undefined,
-      });
+      // Sanitize pagination inputs: ensure non-negative integers, otherwise undefined to let service defaults apply.
+      const parsedLimit = Number.isFinite(Number(limit)) ? Math.max(0, Math.trunc(Number(limit))) : undefined;
+      const parsedOffset = Number.isFinite(Number(offset)) ? Math.max(0, Math.trunc(Number(offset))) : undefined;
 
+      let alerts = null;
+      try {
+        alerts = await maintenanceService.getAlerts({
+          limit: parsedLimit,
+          offset: parsedOffset,
+        });
+      } catch (dbErr) {
+        // DB failure should never propagate to an HTTP 500 for this endpoint.
+        console.error('[alerts] GET /alerts DB/service failure; returning empty list.', {
+          message: dbErr?.message,
+          code: dbErr?.code,
+          detail: dbErr?.detail,
+        });
+        alerts = [];
+      }
+
+      // If service returned null/undefined/non-array, return [].
       return safeReturn(alerts);
     } catch (err) {
-      // Clear error logging for debugging, but do not expose internals to clients.
-      console.error('[alerts] GET /alerts failed; returning empty list.', {
+      // Final safety net: never allow GET /alerts to throw.
+      console.error('[alerts] GET /alerts unexpected failure; returning empty list.', {
         message: err?.message,
         code: err?.code,
         detail: err?.detail,
       });
-
       return safeReturn([]);
     }
   }

@@ -6,9 +6,10 @@ class AlertsController {
    * GET /alerts
    * Always returns HTTP 200 with a JSON array.
    *
-   * Behavior:
-   * - On success: returns DB-backed alerts list.
-   * - On DB/query failure: logs the error and returns fallback dummy alert data.
+   * Hardening strategy:
+   * - Outer try/catch protects the whole handler.
+   * - Nested try/catch protects the DB/service fetch specifically, so DB errors are swallowed.
+   * - Any error => log to console and return [] (never 500).
    *
    * Query params:
    * - limit (optional): max items
@@ -19,46 +20,58 @@ class AlertsController {
    * @returns {Promise<import('express').Response>}
    */
   async list(req, res) {
-    const limit =
-      req.query && req.query.limit !== undefined ? Number(req.query.limit) : undefined;
-    const offset =
-      req.query && req.query.offset !== undefined ? Number(req.query.offset) : undefined;
+    // Always keep a safe fallback that matches the contract (JSON array).
+    const fallback = [];
 
-    const fallbackDummyAlerts = [
-      {
-        id: 1,
-        machine_id: 1,
-        parameter_name: 'temperature',
-        value: 95,
-        severity: 'HIGH',
-        message: 'Test alert working',
-        created_at: new Date().toISOString(),
-      },
-    ];
+    // Requested logs (entry)
+    console.log('[alerts] GET /alerts handler invoked');
 
     try {
-      const alerts = await maintenanceService.getAlerts({
-        limit: Number.isFinite(limit) ? limit : undefined,
-        offset: Number.isFinite(offset) ? offset : undefined,
-      });
+      const rawLimit = req.query && req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+      const rawOffset = req.query && req.query.offset !== undefined ? Number(req.query.offset) : undefined;
 
-      // Hard requirement: always return JSON array
-      if (!Array.isArray(alerts)) {
-        console.error('[alerts] Unexpected non-array response from maintenanceService.getAlerts', {
-          type: typeof alerts,
+      const limit = Number.isFinite(rawLimit) ? rawLimit : undefined;
+      const offset = Number.isFinite(rawOffset) ? rawOffset : undefined;
+
+      // Requested logs (params)
+      console.log('[alerts] GET /alerts params', { limit, offset });
+
+      // Nested try/catch to swallow DB/service errors specifically.
+      try {
+        const alerts = await maintenanceService.getAlerts({ limit, offset });
+
+        // Requested logs (success)
+        console.log('[alerts] DB fetch success', {
+          isArray: Array.isArray(alerts),
+          count: Array.isArray(alerts) ? alerts.length : undefined,
         });
-        return res.status(200).json(fallbackDummyAlerts);
-      }
 
-      return res.status(200).json(alerts);
-    } catch (err) {
-      // Hard requirement: never 500 from this endpoint
-      console.error('[alerts] GET /alerts failed; returning fallback dummy data', {
-        message: err?.message,
-        stack: err?.stack,
-        code: err?.code,
+        // Hard requirement: always return JSON array.
+        if (!Array.isArray(alerts)) {
+          console.error('[alerts] Non-array returned from maintenanceService.getAlerts; returning []', {
+            type: typeof alerts,
+          });
+          return res.status(200).json(fallback);
+        }
+
+        return res.status(200).json(alerts);
+      } catch (dbErr) {
+        // Requested logs (DB failure) — swallow and return [].
+        console.error('[alerts] DB fetch failed; returning []', {
+          message: dbErr?.message,
+          stack: dbErr?.stack,
+          code: dbErr?.code,
+        });
+        return res.status(200).json(fallback);
+      }
+    } catch (outerErr) {
+      // Requested logs (outer failure) — swallow and return [].
+      console.error('[alerts] Outer handler failure; returning []', {
+        message: outerErr?.message,
+        stack: outerErr?.stack,
+        code: outerErr?.code,
       });
-      return res.status(200).json(fallbackDummyAlerts);
+      return res.status(200).json(fallback);
     }
   }
 }

@@ -88,22 +88,12 @@ router.post('/logs', logsController.create.bind(logsController));
  */
 router.get('/alerts', async (req, res) => {
   // Hard requirement for production: this endpoint must never return a 500.
-  // We keep the controller call, but also provide a last-resort fallback
-  // at the routing layer in case the controller/service/DB throws or the
-  // deployment is running a partially mismatched build.
-  const fallbackDummyAlerts = [
-    {
-      id: 1,
-      machine_id: 1,
-      parameter_name: 'temperature',
-      value: 95,
-      severity: 'HIGH',
-      message: 'Test alert working',
-      created_at: new Date().toISOString(),
-    },
-  ];
+  // Last-resort safety net at the routing layer in case of unexpected runtime mismatch.
+  const fallback = [];
 
   try {
+    console.log('[routes] GET /alerts -> dispatching to controller');
+
     // Prefer the controller (keeps behavior consistent with local dev).
     const maybePromise = alertsController.list(req, res);
 
@@ -117,15 +107,16 @@ router.get('/alerts', async (req, res) => {
     }
 
     // If controller didn't send anything (unexpected), return safe fallback.
-    return res.status(200).json(fallbackDummyAlerts);
+    console.error('[routes] GET /alerts controller returned without sending response; returning []');
+    return res.status(200).json(fallback);
   } catch (err) {
-    console.error('[routes] GET /alerts failed; returning fallback dummy data', {
+    console.error('[routes] GET /alerts failed; returning []', {
       message: err?.message,
       stack: err?.stack,
       code: err?.code,
     });
     if (res.headersSent) return;
-    return res.status(200).json(fallbackDummyAlerts);
+    return res.status(200).json(fallback);
   }
 });
 

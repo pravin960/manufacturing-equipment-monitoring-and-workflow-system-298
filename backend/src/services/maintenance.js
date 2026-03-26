@@ -1,17 +1,25 @@
-const maintenanceRepo = require('../db/repositories/maintenanceRepo');
+// backend/src/services/maintenance.js
+//
+// FIX: maintenanceRepo is now loaded lazily inside each method.
+// This prevents a DB crash at require() time from killing this service module on startup.
+
 const { getIO } = require('../realtime/socket');
 
 function computePriority(currentValue, thresholdValue) {
-  // Guard: if threshold is 0, treat any positive as critical; negative/0 as medium
   if (thresholdValue === 0) {
     if (currentValue > 0) return 'Critical';
     return 'Medium';
   }
 
-  const ratio = (currentValue - thresholdValue) / thresholdValue; // e.g. 0.2 => 20% above
+  const ratio = (currentValue - thresholdValue) / thresholdValue;
   if (ratio > 0.5) return 'Critical';
   if (ratio > 0.2) return 'High';
   return 'Medium';
+}
+
+// Lazy loader — safe to call at any time
+function getRepo() {
+  return require('../db/repositories/maintenanceRepo');
 }
 
 class MaintenanceService {
@@ -19,20 +27,12 @@ class MaintenanceService {
    * PUBLIC_INTERFACE
    * Ingest a parameter log. Automatically evaluates thresholds and generates alerts.
    *
-   * Rules:
-   * - Fetch threshold for machine+parameter
-   * - If value exceeds threshold: create alert, mark machine as AT_RISK
-   * - Priority:
-   *   > 50% above threshold => Critical
-   *   > 20% above threshold => High
-   *   else => Medium
-   *
-   * Emits Socket.IO event `alerts:new` to all connected clients when an alert is created.
-   *
    * @param {{machineId:number, parameterName:string, value:number, timestamp?:string}} input
    * @returns {Promise<{log:object, thresholdUsed: object|null, alert: object|null}>}
    */
   async createLogAndEvaluate(input) {
+    const maintenanceRepo = getRepo();
+
     await maintenanceRepo.ensureMachine(input.machineId);
 
     const log = await maintenanceRepo.insertLog({
@@ -44,7 +44,6 @@ class MaintenanceService {
 
     const threshold = await maintenanceRepo.getThreshold(input.machineId, input.parameterName);
 
-    // If there's no threshold configured, we still store the log but can't evaluate.
     if (!threshold) {
       return { log, thresholdUsed: null, alert: null };
     }
@@ -66,14 +65,12 @@ class MaintenanceService {
       createdAt: input.timestamp,
     });
 
-    // Debug log: alert created (per requirements)
     console.log('[alerts] Alert created:', alert);
 
     await maintenanceRepo.markMachineAtRisk(input.machineId);
 
     const io = getIO();
     if (io) {
-      // Required payload for realtime event "new_alert"
       const eventPayload = {
         machineId: alert.machineId,
         parameter: alert.parameterName,
@@ -82,10 +79,7 @@ class MaintenanceService {
         priority: alert.priority,
         timestamp: alert.createdAt,
       };
-
-      // Debug log: socket event emitted (per requirements)
       console.log('[realtime] Emitting new_alert:', eventPayload);
-
       io.emit('new_alert', eventPayload);
     } else {
       console.log('[realtime] Socket.IO not initialized; skipping new_alert emit');
@@ -101,7 +95,16 @@ class MaintenanceService {
    * @returns {Promise<object[]>}
    */
   async getAlerts(opts = {}) {
-    return maintenanceRepo.listAlerts(opts);
+    try {
+      const maintenanceRepo = getRepo();
+      return await maintenanceRepo.listAlerts(opts);
+    } catch (err) {
+      console.error('[maintenance] getAlerts failed; returning []', {
+        message: err?.message,
+        code: err?.code,
+      });
+      return [];
+    }
   }
 
   /**
@@ -111,6 +114,8 @@ class MaintenanceService {
    * @returns {Promise<object>}
    */
   async createWorkOrderFromAlert(input) {
+    const maintenanceRepo = getRepo();
+
     const alert = await maintenanceRepo.getAlertById(input.alertId);
     if (!alert) {
       const err = new Error(`Alert ${input.alertId} not found`);
@@ -136,4 +141,3 @@ class MaintenanceService {
 }
 
 module.exports = new MaintenanceService();
-

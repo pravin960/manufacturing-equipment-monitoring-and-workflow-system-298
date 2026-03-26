@@ -1,4 +1,8 @@
-const maintenanceService = require('../services/maintenance');
+// backend/src/controllers/alerts.js
+//
+// FIX: maintenanceService is now loaded lazily inside the handler.
+// This prevents a DB/service crash at require() time from killing this controller.
+// Even if the DB is completely unreachable, GET /alerts will always return 200 [].
 
 class AlertsController {
   /**
@@ -7,9 +11,10 @@ class AlertsController {
    * Always returns HTTP 200 with a JSON array.
    *
    * Hardening strategy:
-   * - Outer try/catch protects the whole handler.
-   * - Nested try/catch protects the DB/service fetch specifically, so DB errors are swallowed.
-   * - Any error => log to console and return [] (never 500).
+   * - maintenanceService loaded lazily (inside handler) to avoid startup crash
+   * - Outer try/catch protects the whole handler
+   * - Nested try/catch protects the DB/service fetch specifically
+   * - Any error => log to console and return [] (never 500)
    *
    * Query params:
    * - limit (optional): max items
@@ -20,10 +25,8 @@ class AlertsController {
    * @returns {Promise<import('express').Response>}
    */
   async list(req, res) {
-    // Always keep a safe fallback that matches the contract (JSON array).
     const fallback = [];
 
-    // Requested logs (entry)
     console.log('[alerts] GET /alerts handler invoked');
 
     try {
@@ -33,20 +36,18 @@ class AlertsController {
       const limit = Number.isFinite(rawLimit) ? rawLimit : undefined;
       const offset = Number.isFinite(rawOffset) ? rawOffset : undefined;
 
-      // Requested logs (params)
       console.log('[alerts] GET /alerts params', { limit, offset });
 
-      // Nested try/catch to swallow DB/service errors specifically.
       try {
+        // Lazy require: only loads when a request actually comes in, not at startup
+        const maintenanceService = require('../services/maintenance');
         const alerts = await maintenanceService.getAlerts({ limit, offset });
 
-        // Requested logs (success)
         console.log('[alerts] DB fetch success', {
           isArray: Array.isArray(alerts),
           count: Array.isArray(alerts) ? alerts.length : undefined,
         });
 
-        // Hard requirement: always return JSON array.
         if (!Array.isArray(alerts)) {
           console.error('[alerts] Non-array returned from maintenanceService.getAlerts; returning []', {
             type: typeof alerts,
@@ -56,19 +57,15 @@ class AlertsController {
 
         return res.status(200).json(alerts);
       } catch (dbErr) {
-        // Requested logs (DB failure) — swallow and return [].
         console.error('[alerts] DB fetch failed; returning []', {
           message: dbErr?.message,
-          stack: dbErr?.stack,
           code: dbErr?.code,
         });
         return res.status(200).json(fallback);
       }
     } catch (outerErr) {
-      // Requested logs (outer failure) — swallow and return [].
       console.error('[alerts] Outer handler failure; returning []', {
         message: outerErr?.message,
-        stack: outerErr?.stack,
         code: outerErr?.code,
       });
       return res.status(200).json(fallback);

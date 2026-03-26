@@ -8,6 +8,7 @@ class WorkOrdersController {
    */
   async createFromAlert(req, res, next) {
     try {
+      const rid = req.requestId || res?.locals?.requestId || 'no-request-id';
       const { alertId, title, description } = req.body || {};
       if (alertId === undefined) {
         return res.status(400).json({
@@ -20,7 +21,7 @@ class WorkOrdersController {
         alertId: Number(alertId),
         title: title ? String(title) : undefined,
         description: description ? String(description) : undefined,
-      });
+      }, rid);
 
       return res.status(201).json({ data: workOrder });
     } catch (err) {

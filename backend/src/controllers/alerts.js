@@ -87,7 +87,7 @@ class AlertsController {
 
         console.log('[alerts]', { rid, msg: 'Calling maintenanceService.getAlerts' });
 
-        const alerts = await maintenanceService.getAlerts({ limit, offset });
+        const alerts = await maintenanceService.getAlerts({ limit, offset }, rid);
 
         console.log('[alerts]', {
           rid,

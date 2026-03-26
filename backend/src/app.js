@@ -2,9 +2,79 @@ const cors = require('cors');
 const express = require('express');
 const swaggerUi = require('swagger-ui-express');
 const swaggerSpec = require('../swagger');
+const crypto = require('crypto');
 
 // Build marker — changes every deploy so we can verify which code is running.
 const BUILD_MARKER = 'hardened-v2-20260326';
+
+/**
+ * Request-id logging helpers
+ *
+ * We intentionally keep this ultra-verbose to surface the *real* deployed error
+ * (including cases where upstream middleware/proxy/cors/json parsing fails).
+ */
+
+function safeSerializeError(err) {
+  if (!err) return null;
+  return {
+    name: err.name,
+    message: err.message,
+    stack: err.stack,
+    code: err.code,
+    statusCode: err.statusCode,
+    errno: err.errno,
+    syscall: err.syscall,
+    address: err.address,
+    port: err.port,
+    type: typeof err,
+  };
+}
+
+function getOrCreateRequestId(req, res) {
+  // Prefer an inbound request id if present (common in reverse proxies / CDNs)
+  const headerCandidate =
+    (req.get('x-request-id') || req.get('x-correlation-id') || req.get('x-amzn-trace-id') || '').trim();
+
+  const generated = crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now().toString(16)}-${crypto.randomBytes(8).toString('hex')}`;
+
+  const requestId = headerCandidate || generated;
+
+  req.requestId = requestId;
+  res.locals.requestId = requestId;
+
+  // Echo back so clients can report it
+  res.setHeader('x-request-id', requestId);
+
+  return requestId;
+}
+
+function requestLog(req, res, level, message, context = {}) {
+  const rid = req.requestId || res?.locals?.requestId || 'no-request-id';
+  const base = {
+    rid,
+    build: BUILD_MARKER,
+    method: req.method,
+    path: req.path,
+    url: req.originalUrl,
+    ip: req.ip,
+    forwardedFor: req.get('x-forwarded-for'),
+    forwardedProto: req.get('x-forwarded-proto'),
+    forwardedHost: req.get('x-forwarded-host'),
+    host: req.get('host'),
+    ua: req.get('user-agent'),
+    contentType: req.get('content-type'),
+    contentLength: req.get('content-length'),
+    // Do not log Authorization header; that can contain secrets.
+  };
+
+  const payload = { ...base, ...context };
+
+  if (level === 'error') return console.error(message, payload);
+  if (level === 'warn') return console.warn(message, payload);
+  return console.log(message, payload);
+}
 
 /**
  * Determine the public-facing base URL for this API.
@@ -71,6 +141,25 @@ app.use(cors({
 
 app.set('trust proxy', true);
 
+// Attach/propagate a request id for *every* request as early as possible
+app.use((req, res, next) => {
+  const rid = getOrCreateRequestId(req, res);
+
+  // Minimal lifecycle log (kept short to avoid noise); /alerts adds extra verbosity elsewhere.
+  requestLog(req, res, 'log', '[app] request.start', {
+    ridSource: (req.get('x-request-id') || req.get('x-correlation-id') || req.get('x-amzn-trace-id')) ? 'header' : 'generated',
+  });
+
+  res.on('finish', () => {
+    requestLog(req, res, 'log', '[app] request.finish', {
+      statusCode: res.statusCode,
+      headersSent: res.headersSent,
+    });
+  });
+
+  next();
+});
+
 /**
  * OpenAPI JSON endpoint
  */
@@ -111,7 +200,22 @@ app.use(express.json());
 // If anything goes wrong, it catches the error and returns 200 [].
 // ──────────────────────────────────────────────────────────────────────
 app.get('/alerts', (req, res, next) => {
-  console.log('[app] /alerts pre-router safety net entered', { build: BUILD_MARKER });
+  // Ensure request id exists even if some middleware order changes in the future.
+  getOrCreateRequestId(req, res);
+
+  requestLog(req, res, 'log', '[app] /alerts pre-router safety net entered', {
+    safetyNet: true,
+    headers: {
+      // Log only non-sensitive headers likely relevant to deployed mismatch.
+      accept: req.get('accept'),
+      origin: req.get('origin'),
+      referer: req.get('referer'),
+      'x-forwarded-for': req.get('x-forwarded-for'),
+      'x-forwarded-proto': req.get('x-forwarded-proto'),
+      'x-forwarded-host': req.get('x-forwarded-host'),
+    },
+    query: req.query,
+  });
 
   // Attach a flag so we know the safety net is active
   res.locals._alertsSafetyNet = true;
@@ -157,14 +261,19 @@ app.use('/', routes);
 // the contract that /alerts never returns 500.
 // ──────────────────────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
-  // Log the error regardless of route
-  console.error('[app] Global error handler caught error', {
-    method: req.method,
-    path: req.path,
-    url: req.originalUrl,
-    build: BUILD_MARKER,
-    error: err?.message,
-    stack: err?.stack,
+  // Make sure we always have a request id in error paths
+  getOrCreateRequestId(req, res);
+
+  // Log the error regardless of route (ultra-verbose to debug deployed behavior)
+  requestLog(req, res, 'error', '[app] Global error handler caught error', {
+    headersSent: res.headersSent,
+    safetyNet: res?.locals?._alertsSafetyNet === true,
+    error: safeSerializeError(err),
+    locals: {
+      // avoid logging all locals; just the ones relevant to /alerts pathing
+      requestId: res?.locals?.requestId,
+      _alertsSafetyNet: res?.locals?._alertsSafetyNet,
+    },
   });
 
   // If headers already sent, delegate to Express default handler
@@ -174,7 +283,9 @@ app.use((err, req, res, next) => {
 
   // ── /alerts hardening: never return 500 for this route ──
   if (req.method === 'GET' && (req.path === '/alerts' || req.originalUrl.startsWith('/alerts'))) {
-    console.error('[app] Global error handler returning safe [] for /alerts');
+    requestLog(req, res, 'error', '[app] Global error handler returning safe [] for /alerts', {
+      error: safeSerializeError(err),
+    });
     return res.status(200).json([]);
   }
 

@@ -8,6 +8,7 @@ class LogsController {
    */
   async create(req, res, next) {
     try {
+      const rid = req.requestId || res?.locals?.requestId || 'no-request-id';
       const { machineId, parameterName, value, timestamp } = req.body || {};
 
       if (machineId === undefined || parameterName === undefined || value === undefined) {
@@ -22,7 +23,7 @@ class LogsController {
         parameterName: String(parameterName),
         value: Number(value),
         timestamp: timestamp ? String(timestamp) : undefined,
-      });
+      }, rid);
 
       return res.status(201).json(result);
     } catch (err) {

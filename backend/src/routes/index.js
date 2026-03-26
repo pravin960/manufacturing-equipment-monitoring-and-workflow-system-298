@@ -90,12 +90,47 @@ router.get('/alerts', async (req, res) => {
   // Hard requirement for production: this endpoint must never return a 500.
   // Last-resort safety net at the routing layer in case of unexpected runtime mismatch.
   const fallback = [];
+  const rid = req.requestId || res?.locals?.requestId || 'no-request-id';
+  const startedAt = Date.now();
+
+  const serializeErr = (err) => {
+    if (!err) return null;
+    return {
+      name: err.name,
+      message: err.message,
+      stack: err.stack,
+      code: err.code,
+      statusCode: err.statusCode,
+      errno: err.errno,
+      syscall: err.syscall,
+      address: err.address,
+      port: err.port,
+      type: typeof err,
+    };
+  };
 
   try {
-    console.log('[routes] GET /alerts -> dispatching to controller');
+    console.log('[routes]', {
+      rid,
+      msg: 'GET /alerts route entered -> dispatching to controller',
+      method: req.method,
+      path: req.path,
+      url: req.originalUrl,
+      safetyNet: res?.locals?._alertsSafetyNet === true,
+      query: req.query,
+    });
 
     // Prefer the controller (keeps behavior consistent with local dev).
     const maybePromise = alertsController.list(req, res);
+
+    console.log('[routes]', {
+      rid,
+      msg: 'Controller invoked (post-call)',
+      controllerReturnType: typeof maybePromise,
+      controllerIsPromise: Boolean(maybePromise && typeof maybePromise.then === 'function'),
+      headersSent: res.headersSent,
+      ms: Date.now() - startedAt,
+    });
 
     // If the controller already wrote the response, don't interfere.
     if (res.headersSent) return;
@@ -103,17 +138,34 @@ router.get('/alerts', async (req, res) => {
     // If controller returned a promise, await it to catch async errors.
     if (maybePromise && typeof maybePromise.then === 'function') {
       await maybePromise;
+
+      console.log('[routes]', {
+        rid,
+        msg: 'Controller promise awaited',
+        headersSent: res.headersSent,
+        statusCode: res.statusCode,
+        ms: Date.now() - startedAt,
+      });
+
       if (res.headersSent) return;
     }
 
     // If controller didn't send anything (unexpected), return safe fallback.
-    console.error('[routes] GET /alerts controller returned without sending response; returning []');
+    console.error('[routes]', {
+      rid,
+      msg: 'GET /alerts controller returned without sending response; returning []',
+      statusCode: res.statusCode,
+      headersSent: res.headersSent,
+      ms: Date.now() - startedAt,
+    });
     return res.status(200).json(fallback);
   } catch (err) {
-    console.error('[routes] GET /alerts failed; returning []', {
-      message: err?.message,
-      stack: err?.stack,
-      code: err?.code,
+    console.error('[routes]', {
+      rid,
+      msg: 'GET /alerts route wrapper caught error; returning []',
+      error: serializeErr(err),
+      headersSent: res.headersSent,
+      ms: Date.now() - startedAt,
     });
     if (res.headersSent) return;
     return res.status(200).json(fallback);
